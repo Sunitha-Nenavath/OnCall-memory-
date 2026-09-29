@@ -1,0 +1,26 @@
+[
+  {
+    "id": "DEMO-01",
+    "title": "Checkout DB Connection Timeout & Latency Surge",
+    "service": "checkout-api",
+    "severity": "SEV1",
+    "description": "Demo 1: High latency on Checkout API matching past connection pool exhaustion.",
+    "alert_text": "ALERT [SEV1] checkout-api latency spike! p99 response time reached 9200ms on checkout submission endpoint. Application logs show multiple thread starvation warnings: 'HikariPool-1 - Connection is not available, request timed out after 30000ms'. PostgreSQL active connection count has hit max_connections limit of 100 on DB server postgres-primary."
+  },
+  {
+    "id": "DEMO-02",
+    "title": "Payment Pod CrashLoop & Out of Memory Errors",
+    "service": "payments-gateway",
+    "severity": "SEV1",
+    "description": "Demo 2: Pods restarting due to OOMKilled memory leak matching past Jackson parser issue.",
+    "alert_text": "ALERT [SEV1] Kubernetes cluster node alert: payments-gateway container terminated unexpectedly. kubectl get pods shows status 'CrashLoopBackOff', restart count 8. System event log: OOMKilled signal 9 invoked, process memory consumed 2.05 GiB exceeding cgroup quota. Application stack trace points to heap memory exhaustion in JSON payload parsing."
+  },
+  {
+    "id": "DEMO-03",
+    "title": "Corrupted GeoIP Database File Causing International Routing Exceptions",
+    "service": "auth-service",
+    "severity": "SEV2",
+    "description": "Demo 3: Brand new incident type with no past memory history (tests honest behavior).",
+    "alert_text": "ALERT [SEV2] auth-service returning HTTP 500 on international login requests. Log error trace: 'com.maxmind.geoip2.exception.AddressNotFoundException / InvalidDatabaseException: The MaxMind GeoIP2 database file /var/data/GeoIP2-City.mmdb is corrupted or unreadable at offset 0x0041F'. No previous occurrences found in system history."
+  }
+]

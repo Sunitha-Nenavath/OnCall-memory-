@@ -1,0 +1,542 @@
+[
+  {
+    "id": "INC-1001",
+    "timestamp": "2026-04-07T16:57:07Z",
+    "service": "checkout-api",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] checkout-api latency p99 > 8500ms. Error rate 42% on POST /v2/checkout/submit. Log snippet: 'sqlalchemy.exc.TimeoutError: QueuePool limit of size 20 overflow 10 reached, connection timed out after 30.00 seconds'. Metric postgresql_stat_activity_count{db='orders_db', state='active'} = 100/100 connections maxed out. (Ref: INC-1001)",
+    "root_cause": "Unclosed DB transaction leak introduced in release v2.14.0 during Friday deploy. The updated checkout pipeline failed to release SQLAlchemy connections back to Hikari/QueuePool on payment processing timeouts.",
+    "fix_steps": [
+      "Rolled back checkout-api container image to tag v2.13.9.",
+      "Ran pg_terminate_backend() for idle-in-transaction connections on postgres-primary.",
+      "Increased HikariCP maxConnections from 30 to 60 as emergency buffer.",
+      "Patched checkout pipeline DB session context manager with explicit try...finally db.close()."
+    ],
+    "runbook_used": "https://runbooks.internal/db/postgres-connection-exhaustion",
+    "engineer_name": "Sarah Chen (Senior SRE)",
+    "time_to_resolve_minutes": 16,
+    "postmortem_note": "Ensure connection pool metrics have automated alerts set at 80% capacity. Strictly enforce connection context manager linter.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1002",
+    "timestamp": "2026-04-11T16:57:07Z",
+    "service": "payments-gateway",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] KubePodCrashLooping - payments-gateway-5f8d9b7c-x9z2q restarting repeatedly. Pod exit status: 137 (OOMKilled). Container memory utilization reached limit of 2Gi (2048MiB). JVM garbage collection log: 'java.lang.OutOfMemoryError: Java heap space' during stripe webhook payload serialization. (Ref: INC-1002)",
+    "root_cause": "Unbounded buffer allocation in payload logging interceptor when parsing large webhook payloads. Jackson JSON parser retained full byte arrays in memory per concurrent request without batch flushing.",
+    "fix_steps": [
+      "Increased Kubernetes memory limit to 4Gi for deployment/payments-gateway as immediate mitigation.",
+      "Disabled verbose raw payload payload-dump logging interceptor via feature flag PAYMENTS_LOG_VERBOSE=false.",
+      "Deployed patch v1.8.4 implementing streaming JSON parsing with fixed 64KB buffer."
+    ],
+    "runbook_used": "https://runbooks.internal/k8s/oom-pod-restarts",
+    "engineer_name": "Alex Rivera (DevOps Lead)",
+    "time_to_resolve_minutes": 27,
+    "postmortem_note": "Never enable full request payload in-memory buffering in production log interceptors.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1003",
+    "timestamp": "2026-04-18T16:57:07Z",
+    "service": "redis-cache",
+    "severity": "SEV2",
+    "alert_text": "ALERT [SEV2] Redis cache hit ratio dropped from 94% to 12%. redis_used_memory_rss_bytes = 15.8GB / maxmemory 16GB. Eviction rate spikes to 45,000 keys/sec (allkeys-lru). Downstream inventory-service experience 15x DB query surge causing DB CPU 98%. (Ref: INC-1003)",
+    "root_cause": "Campaign marketing flash sale stored 2M uncompressed user recommendation keys without TTL expiration. The memory pressure triggered aggressive LRU evictions of critical inventory session keys.",
+    "fix_steps": [
+      "Flushed recommendation namespace keys via redis-cli SCAN 0 MATCH rec:* COUNT 5000 DEL.",
+      "Updated Redis maxmemory policy to volatile-lru.",
+      "Enforced default TTL of 1 hour for all product recommendation keys."
+    ],
+    "runbook_used": "https://runbooks.internal/cache/redis-eviction-triage",
+    "engineer_name": "Priya Sharma (Backend Engineer)",
+    "time_to_resolve_minutes": 19,
+    "postmortem_note": "Require mandatory TTL policy check in pull requests touching cache set functions.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1004",
+    "timestamp": "2026-04-25T16:57:07Z",
+    "service": "kafka-orders",
+    "severity": "SEV2",
+    "alert_text": "ALERT [SEV2] Kafka consumer group 'fulfillment-workers' lag exceeded 180,000 messages on topic 'orders.events.v1'. Order processing latency increased to 45 minutes. Partition 3 and 7 stuck processing due to lock contention. (Ref: INC-1004)",
+    "root_cause": "Third-party shipping carrier API rate limit HTTP 429 triggered exponential sleep retries inside synchronous event loop on worker threads.",
+    "fix_steps": [
+      "Scaled consumer replica count from 4 to 12 pods.",
+      "Implemented dead-letter queue (DLQ) pattern for orders facing carrier 429 rate limits.",
+      "Added circuit breaker for carrier API with 5-second fallback timeout."
+    ],
+    "runbook_used": "https://runbooks.internal/kafka/consumer-lag-recovery",
+    "engineer_name": "Marcus Vance (Infrastructure Eng)",
+    "time_to_resolve_minutes": 73,
+    "postmortem_note": "Isolate external API integrations into async dead-letter retry workers.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1005",
+    "timestamp": "2026-05-01T16:57:07Z",
+    "service": "auth-service",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] auth-service SSL handshake failures. Error: 'javax.net.ssl.SSLHandshakeException: PKIX path validation failed: certificate has expired'. All inter-service gRPC requests returning UNAUTHENTICATED. (Ref: INC-1005)",
+    "root_cause": "Cert-manager cron job failed to renew internal wildcard tls-secret 'auth-internal-cert' due to IAM permission revocation.",
+    "fix_steps": [
+      "Manually issued emergency cert via Vault CLI.",
+      "Updated Kubernetes secret 'auth-tls-certs' and triggered rolling restart of auth-service pods.",
+      "Restored cert-manager IAM role bindings."
+    ],
+    "runbook_used": "https://runbooks.internal/sec/tls-cert-rotation",
+    "engineer_name": "Elena Rostova (On-Call Primary)",
+    "time_to_resolve_minutes": 28,
+    "postmortem_note": "Add Prometheus alert for certificate expiration 14 days in advance.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1006",
+    "timestamp": "2026-05-04T16:57:07Z",
+    "service": "search-service",
+    "severity": "SEV3",
+    "alert_text": "ALERT [SEV3] search-service p95 latency increased to 3200ms. Elasticsearch node es-cluster-node-2 JVM GC pause time = 4.2s. Search queries with wildcard regex filter '*' overwhelming threadpool search queue. (Ref: INC-1006)",
+    "root_cause": "Unindexed wildcard query parameters allowed from frontend search autocomplete input without string length validation.",
+    "fix_steps": [
+      "Enabled query cache and set max_analyzed_offset guardrail in Elasticsearch index settings.",
+      "Deployed API gateway rule enforcing minimum 3 characters for autocomplete queries."
+    ],
+    "runbook_used": "https://runbooks.internal/api/latency-degradation-triage",
+    "engineer_name": "David Kim (Systems Architect)",
+    "time_to_resolve_minutes": 16,
+    "postmortem_note": "Sanitize and truncate search prefix inputs at the API gateway layer.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1007",
+    "timestamp": "2026-05-13T16:57:07Z",
+    "service": "checkout-api",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] checkout-api latency p99 > 8500ms. Error rate 42% on POST /v2/checkout/submit. Log snippet: 'sqlalchemy.exc.TimeoutError: QueuePool limit of size 20 overflow 10 reached, connection timed out after 30.00 seconds'. Metric postgresql_stat_activity_count{db='orders_db', state='active'} = 100/100 connections maxed out. (Ref: INC-1007)",
+    "root_cause": "Unclosed DB transaction leak introduced in release v2.14.0 during Friday deploy. The updated checkout pipeline failed to release SQLAlchemy connections back to Hikari/QueuePool on payment processing timeouts.",
+    "fix_steps": [
+      "Rolled back checkout-api container image to tag v2.13.9.",
+      "Ran pg_terminate_backend() for idle-in-transaction connections on postgres-primary.",
+      "Increased HikariCP maxConnections from 30 to 60 as emergency buffer.",
+      "Patched checkout pipeline DB session context manager with explicit try...finally db.close()."
+    ],
+    "runbook_used": "https://runbooks.internal/db/postgres-connection-exhaustion",
+    "engineer_name": "Sarah Chen (Senior SRE)",
+    "time_to_resolve_minutes": 20,
+    "postmortem_note": "Ensure connection pool metrics have automated alerts set at 80% capacity. Strictly enforce connection context manager linter.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1008",
+    "timestamp": "2026-05-18T16:57:07Z",
+    "service": "payments-gateway",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] KubePodCrashLooping - payments-gateway-5f8d9b7c-x9z2q restarting repeatedly. Pod exit status: 137 (OOMKilled). Container memory utilization reached limit of 2Gi (2048MiB). JVM garbage collection log: 'java.lang.OutOfMemoryError: Java heap space' during stripe webhook payload serialization. (Ref: INC-1008)",
+    "root_cause": "Unbounded buffer allocation in payload logging interceptor when parsing large webhook payloads. Jackson JSON parser retained full byte arrays in memory per concurrent request without batch flushing.",
+    "fix_steps": [
+      "Increased Kubernetes memory limit to 4Gi for deployment/payments-gateway as immediate mitigation.",
+      "Disabled verbose raw payload payload-dump logging interceptor via feature flag PAYMENTS_LOG_VERBOSE=false.",
+      "Deployed patch v1.8.4 implementing streaming JSON parsing with fixed 64KB buffer."
+    ],
+    "runbook_used": "https://runbooks.internal/k8s/oom-pod-restarts",
+    "engineer_name": "Alex Rivera (DevOps Lead)",
+    "time_to_resolve_minutes": 27,
+    "postmortem_note": "Never enable full request payload in-memory buffering in production log interceptors.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1009",
+    "timestamp": "2026-05-25T16:57:07Z",
+    "service": "redis-cache",
+    "severity": "SEV2",
+    "alert_text": "ALERT [SEV2] Redis cache hit ratio dropped from 94% to 12%. redis_used_memory_rss_bytes = 15.8GB / maxmemory 16GB. Eviction rate spikes to 45,000 keys/sec (allkeys-lru). Downstream inventory-service experience 15x DB query surge causing DB CPU 98%. (Ref: INC-1009)",
+    "root_cause": "Campaign marketing flash sale stored 2M uncompressed user recommendation keys without TTL expiration. The memory pressure triggered aggressive LRU evictions of critical inventory session keys.",
+    "fix_steps": [
+      "Flushed recommendation namespace keys via redis-cli SCAN 0 MATCH rec:* COUNT 5000 DEL.",
+      "Updated Redis maxmemory policy to volatile-lru.",
+      "Enforced default TTL of 1 hour for all product recommendation keys."
+    ],
+    "runbook_used": "https://runbooks.internal/cache/redis-eviction-triage",
+    "engineer_name": "Priya Sharma (Backend Engineer)",
+    "time_to_resolve_minutes": 32,
+    "postmortem_note": "Require mandatory TTL policy check in pull requests touching cache set functions.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1010",
+    "timestamp": "2026-05-30T16:57:07Z",
+    "service": "kafka-orders",
+    "severity": "SEV2",
+    "alert_text": "ALERT [SEV2] Kafka consumer group 'fulfillment-workers' lag exceeded 180,000 messages on topic 'orders.events.v1'. Order processing latency increased to 45 minutes. Partition 3 and 7 stuck processing due to lock contention. (Ref: INC-1010)",
+    "root_cause": "Third-party shipping carrier API rate limit HTTP 429 triggered exponential sleep retries inside synchronous event loop on worker threads.",
+    "fix_steps": [
+      "Scaled consumer replica count from 4 to 12 pods.",
+      "Implemented dead-letter queue (DLQ) pattern for orders facing carrier 429 rate limits.",
+      "Added circuit breaker for carrier API with 5-second fallback timeout."
+    ],
+    "runbook_used": "https://runbooks.internal/kafka/consumer-lag-recovery",
+    "engineer_name": "Marcus Vance (Infrastructure Eng)",
+    "time_to_resolve_minutes": 75,
+    "postmortem_note": "Isolate external API integrations into async dead-letter retry workers.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1011",
+    "timestamp": "2026-06-03T16:57:07Z",
+    "service": "auth-service",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] auth-service SSL handshake failures. Error: 'javax.net.ssl.SSLHandshakeException: PKIX path validation failed: certificate has expired'. All inter-service gRPC requests returning UNAUTHENTICATED. (Ref: INC-1011)",
+    "root_cause": "Cert-manager cron job failed to renew internal wildcard tls-secret 'auth-internal-cert' due to IAM permission revocation.",
+    "fix_steps": [
+      "Manually issued emergency cert via Vault CLI.",
+      "Updated Kubernetes secret 'auth-tls-certs' and triggered rolling restart of auth-service pods.",
+      "Restored cert-manager IAM role bindings."
+    ],
+    "runbook_used": "https://runbooks.internal/sec/tls-cert-rotation",
+    "engineer_name": "Elena Rostova (On-Call Primary)",
+    "time_to_resolve_minutes": 17,
+    "postmortem_note": "Add Prometheus alert for certificate expiration 14 days in advance.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1012",
+    "timestamp": "2026-06-09T16:57:07Z",
+    "service": "search-service",
+    "severity": "SEV3",
+    "alert_text": "ALERT [SEV3] search-service p95 latency increased to 3200ms. Elasticsearch node es-cluster-node-2 JVM GC pause time = 4.2s. Search queries with wildcard regex filter '*' overwhelming threadpool search queue. (Ref: INC-1012)",
+    "root_cause": "Unindexed wildcard query parameters allowed from frontend search autocomplete input without string length validation.",
+    "fix_steps": [
+      "Enabled query cache and set max_analyzed_offset guardrail in Elasticsearch index settings.",
+      "Deployed API gateway rule enforcing minimum 3 characters for autocomplete queries."
+    ],
+    "runbook_used": "https://runbooks.internal/api/latency-degradation-triage",
+    "engineer_name": "David Kim (Systems Architect)",
+    "time_to_resolve_minutes": 33,
+    "postmortem_note": "Sanitize and truncate search prefix inputs at the API gateway layer.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1013",
+    "timestamp": "2026-06-16T16:57:07Z",
+    "service": "checkout-api",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] checkout-api latency p99 > 8500ms. Error rate 42% on POST /v2/checkout/submit. Log snippet: 'sqlalchemy.exc.TimeoutError: QueuePool limit of size 20 overflow 10 reached, connection timed out after 30.00 seconds'. Metric postgresql_stat_activity_count{db='orders_db', state='active'} = 100/100 connections maxed out. (Ref: INC-1013)",
+    "root_cause": "Unclosed DB transaction leak introduced in release v2.14.0 during Friday deploy. The updated checkout pipeline failed to release SQLAlchemy connections back to Hikari/QueuePool on payment processing timeouts.",
+    "fix_steps": [
+      "Rolled back checkout-api container image to tag v2.13.9.",
+      "Ran pg_terminate_backend() for idle-in-transaction connections on postgres-primary.",
+      "Increased HikariCP maxConnections from 30 to 60 as emergency buffer.",
+      "Patched checkout pipeline DB session context manager with explicit try...finally db.close()."
+    ],
+    "runbook_used": "https://runbooks.internal/db/postgres-connection-exhaustion",
+    "engineer_name": "Sarah Chen (Senior SRE)",
+    "time_to_resolve_minutes": 15,
+    "postmortem_note": "Ensure connection pool metrics have automated alerts set at 80% capacity. Strictly enforce connection context manager linter.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1014",
+    "timestamp": "2026-06-23T16:57:07Z",
+    "service": "payments-gateway",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] KubePodCrashLooping - payments-gateway-5f8d9b7c-x9z2q restarting repeatedly. Pod exit status: 137 (OOMKilled). Container memory utilization reached limit of 2Gi (2048MiB). JVM garbage collection log: 'java.lang.OutOfMemoryError: Java heap space' during stripe webhook payload serialization. (Ref: INC-1014)",
+    "root_cause": "Unbounded buffer allocation in payload logging interceptor when parsing large webhook payloads. Jackson JSON parser retained full byte arrays in memory per concurrent request without batch flushing.",
+    "fix_steps": [
+      "Increased Kubernetes memory limit to 4Gi for deployment/payments-gateway as immediate mitigation.",
+      "Disabled verbose raw payload payload-dump logging interceptor via feature flag PAYMENTS_LOG_VERBOSE=false.",
+      "Deployed patch v1.8.4 implementing streaming JSON parsing with fixed 64KB buffer."
+    ],
+    "runbook_used": "https://runbooks.internal/k8s/oom-pod-restarts",
+    "engineer_name": "Alex Rivera (DevOps Lead)",
+    "time_to_resolve_minutes": 42,
+    "postmortem_note": "Never enable full request payload in-memory buffering in production log interceptors.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1015",
+    "timestamp": "2026-06-27T16:57:07Z",
+    "service": "redis-cache",
+    "severity": "SEV2",
+    "alert_text": "ALERT [SEV2] Redis cache hit ratio dropped from 94% to 12%. redis_used_memory_rss_bytes = 15.8GB / maxmemory 16GB. Eviction rate spikes to 45,000 keys/sec (allkeys-lru). Downstream inventory-service experience 15x DB query surge causing DB CPU 98%. (Ref: INC-1015)",
+    "root_cause": "Campaign marketing flash sale stored 2M uncompressed user recommendation keys without TTL expiration. The memory pressure triggered aggressive LRU evictions of critical inventory session keys.",
+    "fix_steps": [
+      "Flushed recommendation namespace keys via redis-cli SCAN 0 MATCH rec:* COUNT 5000 DEL.",
+      "Updated Redis maxmemory policy to volatile-lru.",
+      "Enforced default TTL of 1 hour for all product recommendation keys."
+    ],
+    "runbook_used": "https://runbooks.internal/cache/redis-eviction-triage",
+    "engineer_name": "Priya Sharma (Backend Engineer)",
+    "time_to_resolve_minutes": 25,
+    "postmortem_note": "Require mandatory TTL policy check in pull requests touching cache set functions.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1016",
+    "timestamp": "2026-07-04T16:57:07Z",
+    "service": "kafka-orders",
+    "severity": "SEV2",
+    "alert_text": "ALERT [SEV2] Kafka consumer group 'fulfillment-workers' lag exceeded 180,000 messages on topic 'orders.events.v1'. Order processing latency increased to 45 minutes. Partition 3 and 7 stuck processing due to lock contention. (Ref: INC-1016)",
+    "root_cause": "Third-party shipping carrier API rate limit HTTP 429 triggered exponential sleep retries inside synchronous event loop on worker threads.",
+    "fix_steps": [
+      "Scaled consumer replica count from 4 to 12 pods.",
+      "Implemented dead-letter queue (DLQ) pattern for orders facing carrier 429 rate limits.",
+      "Added circuit breaker for carrier API with 5-second fallback timeout."
+    ],
+    "runbook_used": "https://runbooks.internal/kafka/consumer-lag-recovery",
+    "engineer_name": "Marcus Vance (Infrastructure Eng)",
+    "time_to_resolve_minutes": 39,
+    "postmortem_note": "Isolate external API integrations into async dead-letter retry workers.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1017",
+    "timestamp": "2026-07-11T16:57:07Z",
+    "service": "auth-service",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] auth-service SSL handshake failures. Error: 'javax.net.ssl.SSLHandshakeException: PKIX path validation failed: certificate has expired'. All inter-service gRPC requests returning UNAUTHENTICATED. (Ref: INC-1017)",
+    "root_cause": "Cert-manager cron job failed to renew internal wildcard tls-secret 'auth-internal-cert' due to IAM permission revocation.",
+    "fix_steps": [
+      "Manually issued emergency cert via Vault CLI.",
+      "Updated Kubernetes secret 'auth-tls-certs' and triggered rolling restart of auth-service pods.",
+      "Restored cert-manager IAM role bindings."
+    ],
+    "runbook_used": "https://runbooks.internal/sec/tls-cert-rotation",
+    "engineer_name": "Elena Rostova (On-Call Primary)",
+    "time_to_resolve_minutes": 20,
+    "postmortem_note": "Add Prometheus alert for certificate expiration 14 days in advance.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1018",
+    "timestamp": "2026-07-18T16:57:07Z",
+    "service": "search-service",
+    "severity": "SEV3",
+    "alert_text": "ALERT [SEV3] search-service p95 latency increased to 3200ms. Elasticsearch node es-cluster-node-2 JVM GC pause time = 4.2s. Search queries with wildcard regex filter '*' overwhelming threadpool search queue. (Ref: INC-1018)",
+    "root_cause": "Unindexed wildcard query parameters allowed from frontend search autocomplete input without string length validation.",
+    "fix_steps": [
+      "Enabled query cache and set max_analyzed_offset guardrail in Elasticsearch index settings.",
+      "Deployed API gateway rule enforcing minimum 3 characters for autocomplete queries."
+    ],
+    "runbook_used": "https://runbooks.internal/api/latency-degradation-triage",
+    "engineer_name": "David Kim (Systems Architect)",
+    "time_to_resolve_minutes": 17,
+    "postmortem_note": "Sanitize and truncate search prefix inputs at the API gateway layer.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1019",
+    "timestamp": "2026-07-21T16:57:07Z",
+    "service": "checkout-api",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] checkout-api latency p99 > 8500ms. Error rate 42% on POST /v2/checkout/submit. Log snippet: 'sqlalchemy.exc.TimeoutError: QueuePool limit of size 20 overflow 10 reached, connection timed out after 30.00 seconds'. Metric postgresql_stat_activity_count{db='orders_db', state='active'} = 100/100 connections maxed out. (Ref: INC-1019)",
+    "root_cause": "Unclosed DB transaction leak introduced in release v2.14.0 during Friday deploy. The updated checkout pipeline failed to release SQLAlchemy connections back to Hikari/QueuePool on payment processing timeouts.",
+    "fix_steps": [
+      "Rolled back checkout-api container image to tag v2.13.9.",
+      "Ran pg_terminate_backend() for idle-in-transaction connections on postgres-primary.",
+      "Increased HikariCP maxConnections from 30 to 60 as emergency buffer.",
+      "Patched checkout pipeline DB session context manager with explicit try...finally db.close()."
+    ],
+    "runbook_used": "https://runbooks.internal/db/postgres-connection-exhaustion",
+    "engineer_name": "Sarah Chen (Senior SRE)",
+    "time_to_resolve_minutes": 21,
+    "postmortem_note": "Ensure connection pool metrics have automated alerts set at 80% capacity. Strictly enforce connection context manager linter.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1020",
+    "timestamp": "2026-07-28T16:57:07Z",
+    "service": "payments-gateway",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] KubePodCrashLooping - payments-gateway-5f8d9b7c-x9z2q restarting repeatedly. Pod exit status: 137 (OOMKilled). Container memory utilization reached limit of 2Gi (2048MiB). JVM garbage collection log: 'java.lang.OutOfMemoryError: Java heap space' during stripe webhook payload serialization. (Ref: INC-1020)",
+    "root_cause": "Unbounded buffer allocation in payload logging interceptor when parsing large webhook payloads. Jackson JSON parser retained full byte arrays in memory per concurrent request without batch flushing.",
+    "fix_steps": [
+      "Increased Kubernetes memory limit to 4Gi for deployment/payments-gateway as immediate mitigation.",
+      "Disabled verbose raw payload payload-dump logging interceptor via feature flag PAYMENTS_LOG_VERBOSE=false.",
+      "Deployed patch v1.8.4 implementing streaming JSON parsing with fixed 64KB buffer."
+    ],
+    "runbook_used": "https://runbooks.internal/k8s/oom-pod-restarts",
+    "engineer_name": "Alex Rivera (DevOps Lead)",
+    "time_to_resolve_minutes": 31,
+    "postmortem_note": "Never enable full request payload in-memory buffering in production log interceptors.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1021",
+    "timestamp": "2026-08-03T16:57:07Z",
+    "service": "redis-cache",
+    "severity": "SEV2",
+    "alert_text": "ALERT [SEV2] Redis cache hit ratio dropped from 94% to 12%. redis_used_memory_rss_bytes = 15.8GB / maxmemory 16GB. Eviction rate spikes to 45,000 keys/sec (allkeys-lru). Downstream inventory-service experience 15x DB query surge causing DB CPU 98%. (Ref: INC-1021)",
+    "root_cause": "Campaign marketing flash sale stored 2M uncompressed user recommendation keys without TTL expiration. The memory pressure triggered aggressive LRU evictions of critical inventory session keys.",
+    "fix_steps": [
+      "Flushed recommendation namespace keys via redis-cli SCAN 0 MATCH rec:* COUNT 5000 DEL.",
+      "Updated Redis maxmemory policy to volatile-lru.",
+      "Enforced default TTL of 1 hour for all product recommendation keys."
+    ],
+    "runbook_used": "https://runbooks.internal/cache/redis-eviction-triage",
+    "engineer_name": "Priya Sharma (Backend Engineer)",
+    "time_to_resolve_minutes": 40,
+    "postmortem_note": "Require mandatory TTL policy check in pull requests touching cache set functions.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1022",
+    "timestamp": "2026-08-11T16:57:07Z",
+    "service": "kafka-orders",
+    "severity": "SEV2",
+    "alert_text": "ALERT [SEV2] Kafka consumer group 'fulfillment-workers' lag exceeded 180,000 messages on topic 'orders.events.v1'. Order processing latency increased to 45 minutes. Partition 3 and 7 stuck processing due to lock contention. (Ref: INC-1022)",
+    "root_cause": "Third-party shipping carrier API rate limit HTTP 429 triggered exponential sleep retries inside synchronous event loop on worker threads.",
+    "fix_steps": [
+      "Scaled consumer replica count from 4 to 12 pods.",
+      "Implemented dead-letter queue (DLQ) pattern for orders facing carrier 429 rate limits.",
+      "Added circuit breaker for carrier API with 5-second fallback timeout."
+    ],
+    "runbook_used": "https://runbooks.internal/kafka/consumer-lag-recovery",
+    "engineer_name": "Marcus Vance (Infrastructure Eng)",
+    "time_to_resolve_minutes": 76,
+    "postmortem_note": "Isolate external API integrations into async dead-letter retry workers.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1023",
+    "timestamp": "2026-08-14T16:57:07Z",
+    "service": "auth-service",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] auth-service SSL handshake failures. Error: 'javax.net.ssl.SSLHandshakeException: PKIX path validation failed: certificate has expired'. All inter-service gRPC requests returning UNAUTHENTICATED. (Ref: INC-1023)",
+    "root_cause": "Cert-manager cron job failed to renew internal wildcard tls-secret 'auth-internal-cert' due to IAM permission revocation.",
+    "fix_steps": [
+      "Manually issued emergency cert via Vault CLI.",
+      "Updated Kubernetes secret 'auth-tls-certs' and triggered rolling restart of auth-service pods.",
+      "Restored cert-manager IAM role bindings."
+    ],
+    "runbook_used": "https://runbooks.internal/sec/tls-cert-rotation",
+    "engineer_name": "Elena Rostova (On-Call Primary)",
+    "time_to_resolve_minutes": 27,
+    "postmortem_note": "Add Prometheus alert for certificate expiration 14 days in advance.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1024",
+    "timestamp": "2026-08-23T16:57:07Z",
+    "service": "search-service",
+    "severity": "SEV3",
+    "alert_text": "ALERT [SEV3] search-service p95 latency increased to 3200ms. Elasticsearch node es-cluster-node-2 JVM GC pause time = 4.2s. Search queries with wildcard regex filter '*' overwhelming threadpool search queue. (Ref: INC-1024)",
+    "root_cause": "Unindexed wildcard query parameters allowed from frontend search autocomplete input without string length validation.",
+    "fix_steps": [
+      "Enabled query cache and set max_analyzed_offset guardrail in Elasticsearch index settings.",
+      "Deployed API gateway rule enforcing minimum 3 characters for autocomplete queries."
+    ],
+    "runbook_used": "https://runbooks.internal/api/latency-degradation-triage",
+    "engineer_name": "David Kim (Systems Architect)",
+    "time_to_resolve_minutes": 27,
+    "postmortem_note": "Sanitize and truncate search prefix inputs at the API gateway layer.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1025",
+    "timestamp": "2026-08-29T16:57:07Z",
+    "service": "checkout-api",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] checkout-api latency p99 > 8500ms. Error rate 42% on POST /v2/checkout/submit. Log snippet: 'sqlalchemy.exc.TimeoutError: QueuePool limit of size 20 overflow 10 reached, connection timed out after 30.00 seconds'. Metric postgresql_stat_activity_count{db='orders_db', state='active'} = 100/100 connections maxed out. (Ref: INC-1025)",
+    "root_cause": "Unclosed DB transaction leak introduced in release v2.14.0 during Friday deploy. The updated checkout pipeline failed to release SQLAlchemy connections back to Hikari/QueuePool on payment processing timeouts.",
+    "fix_steps": [
+      "Rolled back checkout-api container image to tag v2.13.9.",
+      "Ran pg_terminate_backend() for idle-in-transaction connections on postgres-primary.",
+      "Increased HikariCP maxConnections from 30 to 60 as emergency buffer.",
+      "Patched checkout pipeline DB session context manager with explicit try...finally db.close()."
+    ],
+    "runbook_used": "https://runbooks.internal/db/postgres-connection-exhaustion",
+    "engineer_name": "Sarah Chen (Senior SRE)",
+    "time_to_resolve_minutes": 50,
+    "postmortem_note": "Ensure connection pool metrics have automated alerts set at 80% capacity. Strictly enforce connection context manager linter.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1026",
+    "timestamp": "2026-09-02T16:57:07Z",
+    "service": "payments-gateway",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] KubePodCrashLooping - payments-gateway-5f8d9b7c-x9z2q restarting repeatedly. Pod exit status: 137 (OOMKilled). Container memory utilization reached limit of 2Gi (2048MiB). JVM garbage collection log: 'java.lang.OutOfMemoryError: Java heap space' during stripe webhook payload serialization. (Ref: INC-1026)",
+    "root_cause": "Unbounded buffer allocation in payload logging interceptor when parsing large webhook payloads. Jackson JSON parser retained full byte arrays in memory per concurrent request without batch flushing.",
+    "fix_steps": [
+      "Increased Kubernetes memory limit to 4Gi for deployment/payments-gateway as immediate mitigation.",
+      "Disabled verbose raw payload payload-dump logging interceptor via feature flag PAYMENTS_LOG_VERBOSE=false.",
+      "Deployed patch v1.8.4 implementing streaming JSON parsing with fixed 64KB buffer."
+    ],
+    "runbook_used": "https://runbooks.internal/k8s/oom-pod-restarts",
+    "engineer_name": "Alex Rivera (DevOps Lead)",
+    "time_to_resolve_minutes": 40,
+    "postmortem_note": "Never enable full request payload in-memory buffering in production log interceptors.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1027",
+    "timestamp": "2026-09-08T16:57:07Z",
+    "service": "redis-cache",
+    "severity": "SEV2",
+    "alert_text": "ALERT [SEV2] Redis cache hit ratio dropped from 94% to 12%. redis_used_memory_rss_bytes = 15.8GB / maxmemory 16GB. Eviction rate spikes to 45,000 keys/sec (allkeys-lru). Downstream inventory-service experience 15x DB query surge causing DB CPU 98%. (Ref: INC-1027)",
+    "root_cause": "Campaign marketing flash sale stored 2M uncompressed user recommendation keys without TTL expiration. The memory pressure triggered aggressive LRU evictions of critical inventory session keys.",
+    "fix_steps": [
+      "Flushed recommendation namespace keys via redis-cli SCAN 0 MATCH rec:* COUNT 5000 DEL.",
+      "Updated Redis maxmemory policy to volatile-lru.",
+      "Enforced default TTL of 1 hour for all product recommendation keys."
+    ],
+    "runbook_used": "https://runbooks.internal/cache/redis-eviction-triage",
+    "engineer_name": "Priya Sharma (Backend Engineer)",
+    "time_to_resolve_minutes": 33,
+    "postmortem_note": "Require mandatory TTL policy check in pull requests touching cache set functions.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1028",
+    "timestamp": "2026-09-15T16:57:07Z",
+    "service": "kafka-orders",
+    "severity": "SEV2",
+    "alert_text": "ALERT [SEV2] Kafka consumer group 'fulfillment-workers' lag exceeded 180,000 messages on topic 'orders.events.v1'. Order processing latency increased to 45 minutes. Partition 3 and 7 stuck processing due to lock contention. (Ref: INC-1028)",
+    "root_cause": "Third-party shipping carrier API rate limit HTTP 429 triggered exponential sleep retries inside synchronous event loop on worker threads.",
+    "fix_steps": [
+      "Scaled consumer replica count from 4 to 12 pods.",
+      "Implemented dead-letter queue (DLQ) pattern for orders facing carrier 429 rate limits.",
+      "Added circuit breaker for carrier API with 5-second fallback timeout."
+    ],
+    "runbook_used": "https://runbooks.internal/kafka/consumer-lag-recovery",
+    "engineer_name": "Marcus Vance (Infrastructure Eng)",
+    "time_to_resolve_minutes": 75,
+    "postmortem_note": "Isolate external API integrations into async dead-letter retry workers.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1029",
+    "timestamp": "2026-09-22T16:57:07Z",
+    "service": "auth-service",
+    "severity": "SEV1",
+    "alert_text": "ALERT [SEV1] auth-service SSL handshake failures. Error: 'javax.net.ssl.SSLHandshakeException: PKIX path validation failed: certificate has expired'. All inter-service gRPC requests returning UNAUTHENTICATED. (Ref: INC-1029)",
+    "root_cause": "Cert-manager cron job failed to renew internal wildcard tls-secret 'auth-internal-cert' due to IAM permission revocation.",
+    "fix_steps": [
+      "Manually issued emergency cert via Vault CLI.",
+      "Updated Kubernetes secret 'auth-tls-certs' and triggered rolling restart of auth-service pods.",
+      "Restored cert-manager IAM role bindings."
+    ],
+    "runbook_used": "https://runbooks.internal/sec/tls-cert-rotation",
+    "engineer_name": "Elena Rostova (On-Call Primary)",
+    "time_to_resolve_minutes": 11,
+    "postmortem_note": "Add Prometheus alert for certificate expiration 14 days in advance.",
+    "was_fix_effective": true
+  },
+  {
+    "id": "INC-1030",
+    "timestamp": "2026-09-27T16:57:07Z",
+    "service": "search-service",
+    "severity": "SEV3",
+    "alert_text": "ALERT [SEV3] search-service p95 latency increased to 3200ms. Elasticsearch node es-cluster-node-2 JVM GC pause time = 4.2s. Search queries with wildcard regex filter '*' overwhelming threadpool search queue. (Ref: INC-1030)",
+    "root_cause": "Unindexed wildcard query parameters allowed from frontend search autocomplete input without string length validation.",
+    "fix_steps": [
+      "Enabled query cache and set max_analyzed_offset guardrail in Elasticsearch index settings.",
+      "Deployed API gateway rule enforcing minimum 3 characters for autocomplete queries."
+    ],
+    "runbook_used": "https://runbooks.internal/api/latency-degradation-triage",
+    "engineer_name": "David Kim (Systems Architect)",
+    "time_to_resolve_minutes": 24,
+    "postmortem_note": "Sanitize and truncate search prefix inputs at the API gateway layer.",
+    "was_fix_effective": true
+  }
+]
