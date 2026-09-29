@@ -105,32 +105,6 @@ OnCallMemory features a dedicated **Side-by-Side Comparison Mode**:
 | **Citations** | None (0 cited) | Exact historical Incident IDs (e.g., `INC-1025`) |
 | **Grounding** | Low (Ungrounded) | High (Strict Citation Validated) |
 
----
-
-## 🛠️ Environment Variables Configuration
-
-Create a `.env` file in the root directory (based on `.env.example`):
-
-```env
-# Hindsight Persistent Memory Configuration
-HINDSIGHT_BASE_URL=https://api.hindsight.vectorize.io
-HINDSIGHT_API_KEY=your_hindsight_api_key_here
-
-# LLM Provider Configuration
-GROQ_API_KEY=your_groq_api_key_here
-GROQ_MODEL=openai/gpt-oss-120b
-GROQ_FALLBACK_MODEL=qwen/qwen3-32b
-
-# Team & Server Settings
-DEFAULT_BANK_ID=oncall-incidents-team-alpha
-HOST=0.0.0.0
-PORT=8000
-```
-
-> [!NOTE]
-> `.env` is listed in `.gitignore` to prevent secret exposure.
-
----
 
 ## 🚀 Quickstart & Running the Application
 
@@ -157,29 +131,6 @@ python backend/main.py
 
 # Terminal 2: Streamlit Frontend
 streamlit run frontend/app.py
-```
-
----
-
-## 🎬 60-Second Demo Script for Judges
-
-1. **Check Live Connectivity**:
-   Look at the sidebar status badge: verify **`🟢 HINDSIGHT CONNECTED`**.
-2. **Step 1 — Load Alert**:
-   On the **🚨 Alert Triage** tab, click **`📌 Demo 1: Checkout Latency`**. Click **`🔍 Diagnose Alert`**.
-3. **Step 2 — Observe Memory Recall & Citations**:
-   The agent recalls `INC-1025`, displays similarity score `0.9`, cites `INC-1025`, and outlines exact PostgreSQL connection pool cleanup steps.
-4. **Step 3 — Compare Side-by-Side**:
-   Switch to **`⚖️ Side-by-Side Comparison`**. Click **`⚖️ Run Side-by-Side Comparison`**.
-   - **Left**: Memory OFF gives generic advice.
-   - **Right**: Memory ON gives grounded historical postmortem steps.
-5. **Step 4 — Reflect Patterns**:
-   Switch to **`📊 Incident Patterns (Reflect)`**. Click **`🔍 Run Hindsight Reflect Analysis`**.
-   Observe Hindsight's synthesis of connection leaks and Friday deployment risks.
-6. **Step 5 — Verify Telemetry**:
-   Switch to **`📡 Hindsight Call Logs`** to inspect live Retain, Recall, and Reflect operation latencies and status badges (**`🟢 SUCCESS (HINDSIGHT CLOUD)`**).
-
----
 
 ## 🧪 Running Tests
 
